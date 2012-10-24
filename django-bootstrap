@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+
+# This script was made by a master bash hacker, hence to following 2 settings
+set -o errexit
+set -o nounset
+
+cat << EOF
+django-bootstrap -- generates a complete django project
+
+usage: django-bootstrap [app_name] [project_name] [virtualenv_path/name] [admin_name (default=admin)] [admin_password (default=admin)]
+
+A Django "project" is a collection of 1 or more "apps", and should go into a "virtualenv".
+This script will create a directory structure for you like so: virtualenv/project/app/...
+EOF
+
+[[ ${#@} -ge 1 ]] && app=$1 || read -p "What would you like to name your app? " app;
+[[ ${#@} -ge 2 ]] && project=$2 || read -p "What would you like to name your project? (It cannot be $app.) " project;
+[[ ${#@} -ge 3 ]] && virtualenv=$3 || read -p "What would you like to name your virtualenv? [$project] " virtualenv;
+[[ ${#@} -ge 4 ]] && superusername=$4 || superusername=admin
+[[ ${#@} -ge 5 ]] && superuserpass=$5 || superuserpass=admin
+[[ $app == $project ]] && echo "Error: You cannot create an app with the same name ('$project') as your project." && exit
+
+# prepare the virtualenv
+virtualenv $virtualenv
+cd $virtualenv
+virtualenv --relocatable .
+echo "export DJANGO_SETTINGS_MODULE=settings" >> bin/activate
+
+# install Django
+set +o nounset # the activate script has a bug that makes it not safe to use with nounset
+source bin/activate
+set -o nounset
+pip install -E . django
+
+# create the Django project and app
+django-admin.py startproject $project
+(cd $project && django-admin.py startapp $app)
+patch -p0 << EOF
+--- $project/settings.py	2011-06-03 22:12:29.000000000 -0400
++++ $project/settings.py	2011-06-03 22:17:41.000000000 -0400
+@@ -2,6 +2,8 @@
+ 
+ DEBUG = True
+ TEMPLATE_DEBUG = DEBUG
++import os
++PROJECT_DIR = os.path.abspath(os.path.dirname(__file__))
+ 
+ ADMINS = (
+     # ('Your Name', 'your_email@example.com'),
+@@ -11,8 +13,8 @@
+ 
+ DATABASES = {
+     'default': {
+-        'ENGINE': 'django.db.backends.', # Add 'postgresql_psycopg2', 'postgresql', 'mysql', 'sqlite3' or 'oracle'.
+-        'NAME': '',                      # Or path to database file if using sqlite3.
++        'ENGINE': 'django.db.backends.sqlite3', # Add 'postgresql_psycopg2', 'postgresql', 'mysql', 'sqlite3' or 'oracle'.
++        'NAME': os.path.join(PROJECT_DIR, 'data.sqlite3'),                      # Or path to database file if using sqlite3.
+         'USER': '',                      # Not used with sqlite3.
+         'PASSWORD': '',                  # Not used with sqlite3.
+         'HOST': '',                      # Set to empty string for localhost. Not used with sqlite3.
+@@ -116,9 +118,10 @@
+     'django.contrib.messages',
+     'django.contrib.staticfiles',
+     # Uncomment the next line to enable the admin:
+-    # 'django.contrib.admin',
++    'django.contrib.admin',
+     # Uncomment the next line to enable admin documentation:
+     # 'django.contrib.admindocs',
++    '$app',
+ )
+ 
+ # A sample logging configuration. The only tangible logging
+--- $project/urls.py    2011-06-03 23:27:47.000000000 -0400
++++ $project/urls.py    2011-06-03 23:44:31.000000000 -0400
+@@ -1,8 +1,8 @@
+ from django.conf.urls.defaults import patterns, include, url
+ 
+ # Uncomment the next two lines to enable the admin:
+-# from django.contrib import admin
+-# admin.autodiscover()
++from django.contrib import admin
++admin.autodiscover()
+ 
+ urlpatterns = patterns('',
+     # Examples:
+@@ -13,5 +13,5 @@
+     # url(r'^admin/doc/', include('django.contrib.admindocs.urls')),
+ 
+     # Uncomment the next line to enable the admin:
+-    # url(r'^admin/', include(admin.site.urls)),
++    url(r'^admin/', include(admin.site.urls)),
+ )
+EOF
+
+# add your project path the Python sys.path the your code can be found
+echo "../../../$project" > $(p=(lib/python*/site-packages); echo ${p[0]})/$project.pth
+
+# prepare the database
+django-admin.py syncdb --noinput
+echo "creating django superuser with login:$superusername and password:$superuserpass...";
+django-admin.py shell << EOF > /dev/null 2>&1
+from django.contrib.auth.models import User
+(admin,created) = User.objects.get_or_create(username='$superusername')
+admin.is_staff=True
+admin.is_active=True
+admin.is_superuser=True
+admin.set_password('$superuserpass')
+admin.save()
+EOF
+
+cat << EOF
+Your project has been setup at $(cd $project && pwd) and your SQLite3 database has been created.
+You can get started by running:
+cd $virtualenv/$project; source ../bin/activate; django-admin.py runserver
+
+Tip: As you develop you may find yourself needing to blow away all of the data in your app(s) and keep the django (auth.user, etc.) tables. Here's a oneliner for that:
+echo '.tables' | sqlite3 data.sqlite3 | xargs -n1 | grep -vE '^(auth|django)' | while read table; do echo "drop table \$table;" | sqlite3 data.sqlite3; done; django-admin.py syncdb
+EOF
